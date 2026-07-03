@@ -13,6 +13,18 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 COOKIES_FILE = "data/cookies.txt"
 DOWNLOAD_DIR = "downloads"
+YT_PROXY = os.getenv("YT_PROXY", "")  # مثلاً http://127.0.0.1:8080
+
+def ydl_opts(extra: dict = None) -> dict:
+    opts = {
+        "quiet": True, "no_warnings": True,
+        "cookiefile": COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
+    }
+    if YT_PROXY:
+        opts["proxy"] = YT_PROXY
+    if extra:
+        opts.update(extra)
+    return opts
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
@@ -35,10 +47,7 @@ async def handle_url(client, message):
     msg = await message.reply("جاري جلب المعلومات...")
 
     try:
-        with yt_dlp.YoutubeDL({
-            "quiet": True, "no_warnings": True,
-            "cookiefile": COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
-        }) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
             info = ydl.extract_info(url, download=False)
 
         user_data[message.from_user.id] = {"url": url, "title": info.get("title", ""), "thumbnail": info.get("thumbnail", "")}
@@ -82,11 +91,10 @@ async def button_handler(client, callback: CallbackQuery):
     fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" if data == "dl_best" else f"bestvideo[height<={data.split('_')[1]}][ext={data.split('_')[2]}]+bestaudio[ext=m4a]/best[height<={data.split('_')[1]}]"
 
     try:
-        with yt_dlp.YoutubeDL({
-            "format": fmt, "quiet": True, "no_warnings": True,
+        with yt_dlp.YoutubeDL(ydl_opts({
+            "format": fmt,
             "outtmpl": f"{DOWNLOAD_DIR}/%(id)s.%(ext)s", "writethumbnail": True,
-            "cookiefile": COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
-        }) as ydl:
+        })) as ydl:
             d = ydl.extract_info(info["url"], download=True)
 
         vid, ext = d["id"], d.get("ext", "mp4")

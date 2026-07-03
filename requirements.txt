@@ -1,3 +1,5 @@
 python-telegram-bot==20.8
+pyrogram==2.0.106
+tgcrypto
 yt-dlp>=2024.1.0
 python-dotenv>=1.0.0

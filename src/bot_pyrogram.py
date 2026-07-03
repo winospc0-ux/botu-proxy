@@ -2,6 +2,8 @@ import os
 import re
 import asyncio
 import logging
+import urllib.request
+import urllib.parse
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
@@ -13,15 +15,41 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 COOKIES_FILE = "data/cookies.txt"
 DOWNLOAD_DIR = "downloads"
-YT_PROXY = os.getenv("YT_PROXY", "")  # مثلاً http://127.0.0.1:8080
+YT_WORKER = os.getenv("YT_WORKER", "")  # https://borxv4.ahider816.workers.dev
+
+# ── توجيه كل طلبات HTTP/S عبر Cloudflare Worker ──
+if YT_WORKER:
+    YT_WORKER = YT_WORKER.rstrip("/")
+    _orig_open = urllib.request.OpenerDirector.open
+
+    def _patched_open(self, fullurl, data=None, timeout=None, *args, **kwargs):
+        # حوّل أي URL إلى طلب عبر الـ Worker
+        if isinstance(fullurl, str):
+            url_str = fullurl
+        elif hasattr(fullurl, "get_full_url"):
+            url_str = fullurl.get_full_url()
+        else:
+            url_str = str(fullurl.url)
+
+        if "youtube" in url_str or "ytimg" in url_str or "googlevideo" in url_str or "ggpht" in url_str:
+            worker_url = f"{YT_WORKER}/?url={urllib.parse.quote(url_str)}"
+            if isinstance(fullurl, urllib.request.Request):
+                new_req = urllib.request.Request(worker_url, data=data or fullurl.data, headers=dict(fullurl.headers), origin_req_host=fullurl.origin_req_host, unverifiable=fullurl.unverifiable)
+                new_req.method = fullurl.method
+                fullurl = new_req
+            else:
+                fullurl = worker_url
+
+        return _orig_open(self, fullurl, data=data, timeout=timeout, *args, **kwargs)
+
+    urllib.request.OpenerDirector.open = _patched_open
+    logging.info(f"✅ تم تفعيل Worker: {YT_WORKER}")
 
 def ydl_opts(extra: dict = None) -> dict:
     opts = {
         "quiet": True, "no_warnings": True,
         "cookiefile": COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
     }
-    if YT_PROXY:
-        opts["proxy"] = YT_PROXY
     if extra:
         opts.update(extra)
     return opts

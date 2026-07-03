@@ -12,7 +12,7 @@ import yt_dlp
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 TELEGRAM_API_URL = os.getenv("TELEGRAM_API_URL", "https://api.telegram.org")
-COOKIES_FILE = "cookies.txt"
+COOKIES_FILE = "data/cookies.txt"
 DOWNLOAD_DIR = "downloads"
 PORT = int(os.getenv("PORT", "8080"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")

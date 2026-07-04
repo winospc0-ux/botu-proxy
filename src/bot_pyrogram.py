@@ -35,11 +35,49 @@ def _load_cookies():
         return {}
     jar = {}
     with open(COOKIES_FILE) as f:
-        for line in f:
-            parts = line.strip().split("\t")
-            if len(parts) >= 7:
-                jar[parts[5]] = parts[6]
+        raw = f.read().strip()
+    # JSON format
+    if raw.startswith("["):
+        try:
+            for c in json.loads(raw):
+                if c.get("name") and c.get("value"):
+                    jar[c["name"]] = c["value"]
+            return jar
+        except:
+            pass
+    # Netscape format
+    for line in raw.split("\n"):
+        parts = line.strip().split("\t")
+        if len(parts) >= 7:
+            jar[parts[5]] = parts[6]
     return jar
+
+def _save_cookies(raw):
+    """حفظ الكوكيز بأي صيغة (JSON أو Netscape)"""
+    raw = raw.strip()
+    # JSON → Netscape
+    if raw.startswith("["):
+        try:
+            data = json.loads(raw)
+            lines = []
+            for c in data:
+                domain = c.get("domain", "")
+                flag = "TRUE" if domain.startswith(".") else "FALSE"
+                path = c.get("path", "/")
+                secure = "TRUE" if c.get("secure") else "FALSE"
+                expiry = str(int(c.get("expirationDate", 0)))
+                name = c.get("name", "")
+                value = c.get("value", "")
+                lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
+            with open(COOKIES_FILE, "w") as f:
+                f.write("\n".join(lines))
+            return len(lines)
+        except:
+            pass
+    # Netscape format as-is
+    with open(COOKIES_FILE, "w") as f:
+        f.write(raw)
+    return len([l for l in raw.split("\n") if l.strip() and not l.startswith("#")])
 
 def fetch(url, timeout=30):
     """Fetch via Netlify proxy فقط"""
@@ -113,20 +151,38 @@ async def cookies_cmd(client, message):
         await message.reply("❌ ملف الكوكيز غير موجود.\nأرسل ملف cookies.txt أو الصق محتواه رداً على هذه الرسالة.")
         return
     with open(COOKIES_FILE) as f:
-        content = f.read()
-    lines = [l for l in content.strip().split("\n") if l.strip() and not l.startswith("#")]
-    expiry_dates = []
-    for l in lines:
-        parts = l.split("\t")
-        if len(parts) >= 7 and parts[4] != "0":
-            import datetime
-            dt = datetime.datetime.fromtimestamp(int(parts[4]))
-            expiry_dates.append(f"  • {parts[5]}: {dt.strftime('%Y-%m-%d %H:%M')}")
-    info = f"📋 **الكوكيز:** {len(lines)} كوكي\n"
-    if expiry_dates:
-        info += "⏳ **الصلاحية:**\n" + "\n".join(expiry_dates[:10])
-        if len(expiry_dates) > 10:
-            info += f"\n  ... و{len(expiry_dates)-10} أخرى"
+        content = f.read().strip()
+    # Detect format
+    if content.startswith("["):
+        try:
+            data = json.loads(content)
+            count = len(data)
+            expiry_dates = []
+            for c in data:
+                if c.get("expirationDate"):
+                    import datetime
+                    expiry_dates.append(f"  • {c['name']}: {datetime.datetime.fromtimestamp(c['expirationDate']).strftime('%Y-%m-%d %H:%M')}")
+            info = f"📋 **الكوكيز:** {count} كوكي (JSON)\n"
+            if expiry_dates:
+                info += "⏳ **الصلاحية:**\n" + "\n".join(expiry_dates[:10])
+                if len(expiry_dates) > 10:
+                    info += f"\n  ... و{len(expiry_dates)-10} أخرى"
+        except:
+            info = "⚠️ ملف الكوكيز بتنسيق غير معروف"
+    else:
+        lines = [l for l in content.split("\n") if l.strip() and not l.startswith("#")]
+        expiry_dates = []
+        for l in lines:
+            parts = l.split("\t")
+            if len(parts) >= 7 and parts[4] != "0":
+                import datetime
+                dt = datetime.datetime.fromtimestamp(int(parts[4]))
+                expiry_dates.append(f"  • {parts[5]}: {dt.strftime('%Y-%m-%d %H:%M')}")
+        info = f"📋 **الكوكيز:** {len(lines)} كوكي (Netscape)\n"
+        if expiry_dates:
+            info += "⏳ **الصلاحية:**\n" + "\n".join(expiry_dates[:10])
+            if len(expiry_dates) > 10:
+                info += f"\n  ... و{len(expiry_dates)-10} أخرى"
     info += "\n\n**للتحديث:** أرسل ملف cookies.txt أو الصق المحتوى رداً على هذه الرسالة"
     await message.reply(info + "\n\n(/cookies)")
 
@@ -140,10 +196,8 @@ async def handle_cookies_file(client, message):
         path = await message.download()
         with open(path) as f:
             content = f.read()
-        with open(COOKIES_FILE, "w") as f:
-            f.write(content)
         os.remove(path)
-        count = len([l for l in content.strip().split("\n") if l.strip() and not l.startswith("#")])
+        count = _save_cookies(content)
         await msg.edit_text(f"✅ تم حفظ {count} كوكيز!")
     except Exception as e:
         await msg.edit_text(f"❌ خطأ: {e}")
@@ -154,9 +208,7 @@ async def handle_cookies_text(client, message):
     if not reply_to or not reply_to.text or "/cookies" not in reply_to.text:
         return
     try:
-        with open(COOKIES_FILE, "w") as f:
-            f.write(message.text)
-        count = len([l for l in message.text.strip().split("\n") if l.strip() and not l.startswith("#")])
+        count = _save_cookies(message.text)
         await message.reply(f"✅ تم حفظ {count} كوكيز!")
     except Exception as e:
         await message.reply(f"❌ خطأ: {e}")

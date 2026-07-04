@@ -21,6 +21,12 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 user_data: dict[int, dict] = {}
 
+# حذف الجلسات القديمة لتجنب FloodWait
+for f in os.listdir("."):
+    if f.endswith(".session") or f.endswith(".session-journal"):
+        os.remove(f)
+        logging.info(f"🗑️ حذف الجلسة القديمة: {f}")
+
 _headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -261,4 +267,20 @@ class HealthHandler(BaseHTTPRequestHandler):
 Thread(target=lambda: HTTPServer(("0.0.0.0", PORT), HealthHandler).serve_forever(), daemon=True).start()
 logging.info(f"🌐 Web server on port {PORT}")
 
-app.run()
+# تشغيل البوت مع إعادة محاولة إذا صار FloodWait
+import time
+for attempt in range(5):
+    try:
+        app.run()
+        break
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        msg = str(e)
+        if "FLOOD_WAIT" in msg:
+            secs = 60 * (attempt + 1)
+            logging.warning(f"⚠️ FloodWait ({msg}), انتظار {secs}ث...")
+            time.sleep(secs)
+        else:
+            logging.error(f"❌ خطأ: {e}")
+            time.sleep(10)

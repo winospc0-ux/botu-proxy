@@ -1,6 +1,9 @@
 import os
 import re
+import asyncio
 import logging
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
@@ -90,5 +93,24 @@ async def button_handler(client, callback: CallbackQuery):
         await callback.message.delete()
     except Exception as e:
         await callback.message.edit_text(f"خطأ: {e}")
+
+# ── Health check server لـ Hugging Face ──
+PORT = int(os.getenv("PORT", "7860"))
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"<h1>Bot is running</h1>")
+    def log_message(self, fmt, *args):
+        pass
+
+def run_http():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    server.serve_forever()
+
+Thread(target=run_http, daemon=True).start()
+logging.info(f"🌐 Web server on port {PORT}")
 
 app.run()

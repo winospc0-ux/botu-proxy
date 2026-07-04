@@ -105,20 +105,69 @@ app = Client("yt_dl_bot", bot_token=TOKEN, api_id=API_ID, api_hash=API_HASH)
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    await message.reply("مرحباً! أرسل رابط يوتيوب لأبدأ.\nسأعطيك خيارات الدقة للتحميل.")
+    await message.reply("مرحباً! أرسل رابط يوتيوب لأبدأ.\nسأعطيك خيارات الدقة للتحميل.\n/cookies لإدارة كوكيز يوتيوب.")
 
-@app.on_message(filters.command("test"))
-async def test(client, message):
-    msg = await message.reply("جاري الاختبار...")
-    results = []
-    for domain in ["google.com", "botutu.talaali.workers.dev", "api.telegram.org"]:
-        try:
-            s = socket.create_connection((domain, 443), timeout=5)
-            s.close()
-            results.append(f"✅ {domain}")
-        except Exception as e:
-            results.append(f"❌ {domain} -> {e}")
-    await msg.edit_text("\n".join(results))
+@app.on_message(filters.command("cookies"))
+async def cookies_cmd(client, message):
+    if not os.path.exists(COOKIES_FILE):
+        await message.reply("❌ ملف الكوكيز غير موجود.\nأرسل ملف cookies.txt أو الصق محتواه رداً على هذه الرسالة.")
+        return
+    with open(COOKIES_FILE) as f:
+        content = f.read()
+    lines = [l for l in content.strip().split("\n") if l.strip() and not l.startswith("#")]
+    expiry_dates = []
+    for l in lines:
+        parts = l.split("\t")
+        if len(parts) >= 7 and parts[4] != "0":
+            import datetime
+            dt = datetime.datetime.fromtimestamp(int(parts[4]))
+            expiry_dates.append(f"  • {parts[5]}: {dt.strftime('%Y-%m-%d %H:%M')}")
+    info = f"📋 **الكوكيز:** {len(lines)} كوكي\n"
+    if expiry_dates:
+        info += "⏳ **الصلاحية:**\n" + "\n".join(expiry_dates[:10])
+        if len(expiry_dates) > 10:
+            info += f"\n  ... و{len(expiry_dates)-10} أخرى"
+    info += "\n\n**للتحديث:** أرسل ملف cookies.txt أو الصق المحتوى رداً على هذه الرسالة"
+    await message.reply(info)
+
+@app.on_message(filters.document & filters.reply)
+async def handle_cookies_file(client, message):
+    reply_to = message.reply_to_message
+    if not reply_to or not reply_to.text or "/cookies" not in reply_to.text:
+        return
+    msg = await message.reply("جاري حفظ الكوكيز...")
+    try:
+        path = await message.download()
+        with open(path) as f:
+            content = f.read()
+        if "youtube" not in content.lower() and ".youtube.com" not in content:
+            os.remove(path)
+            await msg.edit_text("❌ هذا الملف ليس كوكيز يوتيوب!")
+            return
+        with open(COOKIES_FILE, "w") as f:
+            f.write(content)
+        os.remove(path)
+        count = len([l for l in content.strip().split("\n") if l.strip() and not l.startswith("#")])
+        await msg.edit_text(f"✅ تم حفظ {count} كوكي!")
+    except Exception as e:
+        await msg.edit_text(f"❌ خطأ: {e}")
+
+@app.on_message(filters.text & filters.reply & ~filters.command(""))
+async def handle_cookies_text(client, message):
+    reply_to = message.reply_to_message
+    if not reply_to or not reply_to.text or "/cookies" not in reply_to.text:
+        return
+    content = message.text
+    if "youtube" not in content.lower() and ".youtube.com" not in content:
+        await message.reply("❌ هذا النص ليس كوكيز يوتيوب!")
+        return
+    try:
+        with open(COOKIES_FILE, "w") as f:
+            f.write(content)
+        count = len([l for l in content.strip().split("\n") if l.strip() and not l.startswith("#")])
+        await message.reply(f"✅ تم حفظ {count} كوكي!")
+    except Exception as e:
+        await message.reply(f"❌ خطأ: {e}")
 
 @app.on_message(filters.text & ~filters.command(""))
 async def handle_url(client, message):

@@ -7,6 +7,8 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQ
 import requests
 import ssl
 import concurrent.futures
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -37,23 +39,30 @@ def _load_cookies():
                 jar[parts[5]] = parts[6]
     return jar
 
-def fetch(url, timeout=30):
-    """Fetch a URL using multiple strategies"""
+def fetch(url, timeout=15):
+    """Fetch a URL with multiple retries and strategies"""
     errs = []
     cookies = _load_cookies()
     hdrs = dict(_headers)
     if cookies:
         hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
-    # Strategy 1: via Worker
+
+    # Strategy: try Worker with multiple retries + backoff
     if YT_WORKER:
-        try:
-            wurl = f"{YT_WORKER}/?url={urllib.parse.quote(url)}"
-            r = requests.get(wurl, headers=hdrs, timeout=timeout)
-            r.raise_for_status()
-            return r
-        except Exception as e:
-            errs.append(f"Worker: {e}")
-    # Strategy 2: direct
+        workers = [YT_WORKER, YT_WORKER.replace("https://", "http://")]
+        for attempt in range(5):
+            worker = workers[attempt % len(workers)]
+            try:
+                wurl = f"{worker}/?url={urllib.parse.quote(url)}"
+                r = requests.get(wurl, headers=hdrs, timeout=timeout)
+                r.raise_for_status()
+                return r
+            except Exception as e:
+                errs.append(f"#{attempt+1}: {e}")
+                import time
+                time.sleep(attempt + 1)
+
+    # Fallback: direct
     try:
         r = requests.get(url, headers=hdrs, timeout=timeout)
         r.raise_for_status()
@@ -139,7 +148,7 @@ async def handle_url(client, message):
         loop = asyncio.get_event_loop()
         info = await asyncio.wait_for(
             loop.run_in_executor(None, get_video_info, url),
-            timeout=35
+            timeout=90
         )
         user_data[message.from_user.id] = info
         keyboard = []

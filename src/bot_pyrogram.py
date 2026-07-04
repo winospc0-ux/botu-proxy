@@ -128,7 +128,7 @@ async def cookies_cmd(client, message):
         if len(expiry_dates) > 10:
             info += f"\n  ... و{len(expiry_dates)-10} أخرى"
     info += "\n\n**للتحديث:** أرسل ملف cookies.txt أو الصق المحتوى رداً على هذه الرسالة"
-    await message.reply(info)
+    await message.reply(info + "\n\n(/cookies)")
 
 @app.on_message(filters.document & filters.reply)
 async def handle_cookies_file(client, message):

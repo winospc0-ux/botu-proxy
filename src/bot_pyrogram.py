@@ -36,7 +36,7 @@ def _load_cookies():
                 jar[parts[5]] = parts[6]
     return jar
 
-def fetch(url, timeout=120):
+def fetch(url, timeout=30):
     """Fetch a URL using multiple strategies"""
     errs = []
     cookies = _load_cookies()
@@ -45,14 +45,13 @@ def fetch(url, timeout=120):
         hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
     # Strategy 1: via Worker
     if YT_WORKER:
-        for attempt in range(3):
-            try:
-                wurl = f"{YT_WORKER}/?url={urllib.parse.quote(url)}"
-                r = requests.get(wurl, headers=hdrs, timeout=timeout)
-                r.raise_for_status()
-                return r
-            except Exception as e:
-                errs.append(f"Worker ({attempt+1}): {e}")
+        try:
+            wurl = f"{YT_WORKER}/?url={urllib.parse.quote(url)}"
+            r = requests.get(wurl, headers=hdrs, timeout=timeout)
+            r.raise_for_status()
+            return r
+        except Exception as e:
+            errs.append(f"Worker: {e}")
     # Strategy 2: direct
     try:
         r = requests.get(url, headers=hdrs, timeout=timeout)

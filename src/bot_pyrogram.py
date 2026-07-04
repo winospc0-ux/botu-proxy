@@ -1,10 +1,11 @@
-import os, re, json, logging, urllib.parse, asyncio
+import os, re, json, logging, urllib.parse, asyncio, subprocess, tempfile
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 import requests
+import ssl
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -12,20 +13,11 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 DOWNLOAD_DIR = "downloads"
 YT_WORKER = os.getenv("YT_WORKER", "").rstrip("/")
+COOKIES_FILE = "data/cookies.txt"
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 user_data: dict[int, dict] = {}
-
-# قراءة الكوكيز من ملف
-_cookie_jar = {}
-if os.path.exists("data/cookies.txt"):
-    with open("data/cookies.txt") as f:
-        for line in f:
-            parts = line.strip().split("\t")
-            if len(parts) >= 7:
-                _cookie_jar[parts[5]] = parts[6]
-_cookie_str = "; ".join(f"{k}={v}" for k, v in _cookie_jar.items())
 
 _headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36",
@@ -33,18 +25,58 @@ _headers = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
-def wfetch(url):
-    if YT_WORKER:
-        url = f"{YT_WORKER}/?url={urllib.parse.quote(url)}"
+def _load_cookies():
+    if not os.path.exists(COOKIES_FILE):
+        return {}
+    jar = {}
+    with open(COOKIES_FILE) as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 7:
+                jar[parts[5]] = parts[6]
+    return jar
+
+def fetch(url, timeout=120):
+    """Fetch a URL using multiple strategies"""
+    errs = []
+    cookies = _load_cookies()
     hdrs = dict(_headers)
-    if _cookie_str:
-        hdrs["Cookie"] = _cookie_str
-    r = requests.get(url, headers=hdrs, timeout=30)
-    r.raise_for_status()
-    return r
+    if cookies:
+        hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    # Strategy 1: via Worker
+    if YT_WORKER:
+        for attempt in range(3):
+            try:
+                wurl = f"{YT_WORKER}/?url={urllib.parse.quote(url)}"
+                r = requests.get(wurl, headers=hdrs, timeout=timeout)
+                r.raise_for_status()
+                return r
+            except Exception as e:
+                errs.append(f"Worker ({attempt+1}): {e}")
+    # Strategy 2: direct
+    try:
+        r = requests.get(url, headers=hdrs, timeout=timeout)
+        r.raise_for_status()
+        return r
+    except Exception as e:
+        errs.append(f"Direct: {e}")
+
+    raise Exception("كل الطرق فشلت:\n" + "\n".join(errs))
+
+def ytdlp_get_url(video_url):
+    """Get actual download URL using yt-dlp (handles signature decryption)"""
+    cmd = ["yt-dlp", "-g", "--no-warnings", "-f", "best"]
+    if os.path.exists(COOKIES_FILE):
+        cmd += ["--cookies", COOKIES_FILE]
+    r = subprocess.run(cmd + [video_url], capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise Exception(f"yt-dlp: {r.stderr.strip()}")
+    return r.stdout.strip().split("\n")[0]
 
 def get_video_info(video_url):
-    html = wfetch(video_url).text
+    html = fetch(video_url).text
+    if "captcha" in html.lower() or "solveSimpleChallenge" in html:
+        raise Exception("يوتيوب طلب CAPTCHA، جرب إضافة كوكيز جديد في data/cookies.txt")
     m = re.search(r'ytInitialPlayerResponse\s*=\s*({.*?});', html, re.DOTALL)
     if not m:
         m = re.search(r'window\.ytInitialPlayerResponse\s*=\s*({.*?});', html, re.DOTALL)
@@ -53,18 +85,24 @@ def get_video_info(video_url):
     data = json.loads(m.group(1))
     title = data.get("videoDetails", {}).get("title", "بدون عنوان")
     vid = data.get("videoDetails", {}).get("videoId", "")
+    streaming = data.get("streamingData", {})
     formats = []
     seen = set()
     for src in ("formats", "adaptiveFormats"):
-        for fmt in data.get("streamingData", {}).get(src, []):
+        for fmt in streaming.get(src, []):
             h = fmt.get("height")
             if h and h not in seen:
                 seen.add(h)
+                url = fmt.get("url") or ""
+                if not url and "cipher" in fmt:
+                    from urllib.parse import parse_qs
+                    q = parse_qs(fmt["cipher"])
+                    url = q.get("url", [""])[0]
                 formats.append({
                     "height": h,
                     "ext": fmt.get("mimeType", "").split("/")[1].split(";")[0],
-                    "url": fmt.get("url", ""),
                     "filesize": fmt.get("contentLength", 0) and int(fmt["contentLength"]),
+                    "url": url,
                 })
     formats.sort(key=lambda x: x["height"], reverse=True)
     return {"id": vid, "title": title, "formats": formats}
@@ -110,10 +148,10 @@ async def button_handler(client, callback: CallbackQuery):
     await callback.message.edit_text("جاري التحميل والرفع...")
     try:
         chosen = info["formats"][0] if data == "dl_best" else next((f for f in info["formats"] if f["height"] == int(data.split("_")[1])), info["formats"][0])
-        if not chosen.get("url"):
-            raise Exception("ما فيه رابط تحميل")
-        vpath = os.path.join(DOWNLOAD_DIR, f"{info['id']}.{chosen['ext']}")
-        r = wfetch(chosen["url"])
+        durl = chosen.get("url") or ytdlp_get_url(f"https://www.youtube.com/watch?v={info['id']}")
+        ext = chosen["ext"]
+        vpath = os.path.join(DOWNLOAD_DIR, f"{info['id']}.{ext}")
+        r = fetch(durl)
         with open(vpath, "wb") as f:
             f.write(r.content)
         await callback.message.reply_video(video=vpath, caption=f"🎬 {info['title']}", supports_streaming=True)

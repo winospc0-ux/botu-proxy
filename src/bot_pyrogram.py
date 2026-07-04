@@ -14,6 +14,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 DOWNLOAD_DIR = "downloads"
 YT_WORKER = os.getenv("YT_WORKER", "").rstrip("/")
+NETLIFY_PROXY = os.getenv("NETLIFY_PROXY", "").rstrip("/")
 COOKIES_FILE = "data/cookies.txt"
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -75,9 +76,9 @@ def fetch(url, timeout=15):
     if cookies:
         hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
 
-    # Strategy 1: try Worker
+    # Strategy 1: try Worker (Cloudflare)
     if YT_WORKER:
-        for attempt in range(4):
+        for attempt in range(3):
             try:
                 wurl = f"{YT_WORKER}/?url={urllib.parse.quote(url)}"
                 r = requests.get(wurl, headers=hdrs, timeout=timeout)
@@ -86,7 +87,17 @@ def fetch(url, timeout=15):
             except Exception as e:
                 errs.append(f"Worker #{attempt+1}: {e}")
 
-    # Strategy 2: direct with proxy
+    # Strategy 2: try Netlify proxy
+    if NETLIFY_PROXY:
+        try:
+            wurl = f"{NETLIFY_PROXY}?url={urllib.parse.quote(url)}"
+            r = requests.get(wurl, headers=hdrs, timeout=timeout)
+            r.raise_for_status()
+            return r
+        except Exception as e:
+            errs.append(f"Netlify: {e}")
+
+    # Strategy 4: direct with SOCKS5 proxy
     for attempt in range(3):
         proxy = _pick_proxy()
         if not proxy:
@@ -98,7 +109,7 @@ def fetch(url, timeout=15):
         except Exception as e:
             errs.append(f"Proxy #{attempt+1} ({proxy}): {e}")
 
-    # Strategy 3: direct (no proxy)
+    # Strategy 5: direct (no proxy)
     try:
         r = requests.get(url, headers=hdrs, timeout=timeout)
         r.raise_for_status()

@@ -1,19 +1,16 @@
-import os, re, json, logging, urllib.parse, asyncio, subprocess, tempfile, socket, random
+import os, re, json, logging, urllib.parse, asyncio, subprocess
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 import requests
-import ssl
-import concurrent.futures
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 DOWNLOAD_DIR = "downloads"
-YT_WORKER = os.getenv("YT_WORKER", "").rstrip("/")
 NETLIFY_PROXY = os.getenv("NETLIFY_PROXY", "").rstrip("/")
 COOKIES_FILE = "data/cookies.txt"
 

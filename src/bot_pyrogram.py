@@ -18,11 +18,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 user_data: dict[int, dict] = {}
 
-# حذف الجلسات القديمة لتجنب FloodWait
-for f in os.listdir("."):
-    if f.endswith(".session") or f.endswith(".session-journal"):
-        os.remove(f)
-        logging.info(f"🗑️ حذف الجلسة القديمة: {f}")
+
 
 _headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36",
@@ -291,7 +287,7 @@ logging.info(f"🌐 Web server on port {PORT}")
 
 # تشغيل البوت مع إعادة محاولة إذا صار FloodWait
 import time
-for attempt in range(5):
+for attempt in range(10):
     try:
         app.run()
         break
@@ -300,8 +296,10 @@ for attempt in range(5):
     except Exception as e:
         msg = str(e)
         if "FLOOD_WAIT" in msg:
-            secs = 60 * (attempt + 1)
-            logging.warning(f"⚠️ FloodWait ({msg}), انتظار {secs}ث...")
+            import re
+            m = re.search(r"(\d+)", msg)
+            secs = int(m.group(1)) + 5 if m else 120
+            logging.warning(f"⚠️ FloodWait, انتظار {secs}ث...")
             time.sleep(secs)
         else:
             logging.error(f"❌ خطأ: {e}")

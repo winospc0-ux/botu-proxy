@@ -1,4 +1,4 @@
-import os, re, json, logging, urllib.parse, asyncio, subprocess, tempfile
+import os, re, json, logging, urllib.parse, asyncio, subprocess, tempfile, socket
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
@@ -6,6 +6,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 import requests
 import ssl
+import concurrent.futures
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -73,14 +74,17 @@ def ytdlp_get_url(video_url):
     return r.stdout.strip().split("\n")[0]
 
 def get_video_info(video_url):
-    html = fetch(video_url).text
+    try:
+        html = fetch(video_url).text
+    except Exception as e:
+        raise Exception(f"فشل جلب الصفحة: {e}")
     if "captcha" in html.lower() or "solveSimpleChallenge" in html:
-        raise Exception("يوتيوب طلب CAPTCHA، جرب إضافة كوكيز جديد في data/cookies.txt")
+        raise Exception("يوتيوب طلب CAPTCHA. جرب:\n1. حدّث الكوكيز (data/cookies.txt)\n2. أو أرسل /test عشان نشوف الاتصال")
     m = re.search(r'ytInitialPlayerResponse\s*=\s*({.*?});', html, re.DOTALL)
     if not m:
         m = re.search(r'window\.ytInitialPlayerResponse\s*=\s*({.*?});', html, re.DOTALL)
     if not m:
-        raise Exception("ما لقيت بيانات الفيديو")
+        raise Exception("ما لقيت بيانات الفيديو في الصفحة")
     data = json.loads(m.group(1))
     title = data.get("videoDetails", {}).get("title", "بدون عنوان")
     vid = data.get("videoDetails", {}).get("videoId", "")
@@ -112,6 +116,19 @@ app = Client("yt_dl_bot", bot_token=TOKEN, api_id=API_ID, api_hash=API_HASH)
 async def start(client, message):
     await message.reply("مرحباً! أرسل رابط يوتيوب لأبدأ.\nسأعطيك خيارات الدقة للتحميل.")
 
+@app.on_message(filters.command("test"))
+async def test(client, message):
+    msg = await message.reply("جاري الاختبار...")
+    results = []
+    for domain in ["google.com", "botutu.talaali.workers.dev", "api.telegram.org"]:
+        try:
+            s = socket.create_connection((domain, 443), timeout=5)
+            s.close()
+            results.append(f"✅ {domain}")
+        except Exception as e:
+            results.append(f"❌ {domain} -> {e}")
+    await msg.edit_text("\n".join(results))
+
 @app.on_message(filters.text & ~filters.command(""))
 async def handle_url(client, message):
     url = message.text.strip()
@@ -119,7 +136,11 @@ async def handle_url(client, message):
         return
     msg = await message.reply("جاري جلب المعلومات...")
     try:
-        info = await asyncio.get_event_loop().run_in_executor(None, get_video_info, url)
+        loop = asyncio.get_event_loop()
+        info = await asyncio.wait_for(
+            loop.run_in_executor(None, get_video_info, url),
+            timeout=35
+        )
         user_data[message.from_user.id] = info
         keyboard = []
         for f in info["formats"]:
@@ -130,6 +151,8 @@ async def handle_url(client, message):
         keyboard.append([InlineKeyboardButton("🎥 أعلى دقة", callback_data="dl_best")])
         keyboard.append([InlineKeyboardButton("❌ إلغاء", callback_data="dl_cancel")])
         await msg.edit_text(f"**{info['title']}**\nاختر الدقة:", reply_markup=InlineKeyboardMarkup(keyboard))
+    except asyncio.TimeoutError:
+        await msg.edit_text("خطأ: انتهت المهلة (35 ثانية)")
     except Exception as e:
         await msg.edit_text(f"خطأ: {e}")
 
@@ -147,15 +170,23 @@ async def button_handler(client, callback: CallbackQuery):
     await callback.message.edit_text("جاري التحميل والرفع...")
     try:
         chosen = info["formats"][0] if data == "dl_best" else next((f for f in info["formats"] if f["height"] == int(data.split("_")[1])), info["formats"][0])
-        durl = chosen.get("url") or ytdlp_get_url(f"https://www.youtube.com/watch?v={info['id']}")
+        durl = chosen.get("url")
         ext = chosen["ext"]
         vpath = os.path.join(DOWNLOAD_DIR, f"{info['id']}.{ext}")
-        r = fetch(durl)
+        if not durl:
+            raise Exception("ما فيه رابط تحميل مباشر")
+        loop = asyncio.get_event_loop()
+        r = await asyncio.wait_for(
+            loop.run_in_executor(None, fetch, durl),
+            timeout=60
+        )
         with open(vpath, "wb") as f:
             f.write(r.content)
         await callback.message.reply_video(video=vpath, caption=f"🎬 {info['title']}", supports_streaming=True)
         os.remove(vpath)
         await callback.message.delete()
+    except asyncio.TimeoutError:
+        await callback.message.edit_text("خطأ: انتهت المهلة أثناء التحميل")
     except Exception as e:
         await callback.message.edit_text(f"خطأ: {e}")
 

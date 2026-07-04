@@ -140,15 +140,11 @@ async def handle_cookies_file(client, message):
         path = await message.download()
         with open(path) as f:
             content = f.read()
-        if "youtube" not in content.lower() and ".youtube.com" not in content:
-            os.remove(path)
-            await msg.edit_text("❌ هذا الملف ليس كوكيز يوتيوب!")
-            return
         with open(COOKIES_FILE, "w") as f:
             f.write(content)
         os.remove(path)
         count = len([l for l in content.strip().split("\n") if l.strip() and not l.startswith("#")])
-        await msg.edit_text(f"✅ تم حفظ {count} كوكي!")
+        await msg.edit_text(f"✅ تم حفظ {count} كوكيز!")
     except Exception as e:
         await msg.edit_text(f"❌ خطأ: {e}")
 
@@ -157,15 +153,11 @@ async def handle_cookies_text(client, message):
     reply_to = message.reply_to_message
     if not reply_to or not reply_to.text or "/cookies" not in reply_to.text:
         return
-    content = message.text
-    if "youtube" not in content.lower() and ".youtube.com" not in content:
-        await message.reply("❌ هذا النص ليس كوكيز يوتيوب!")
-        return
     try:
         with open(COOKIES_FILE, "w") as f:
-            f.write(content)
-        count = len([l for l in content.strip().split("\n") if l.strip() and not l.startswith("#")])
-        await message.reply(f"✅ تم حفظ {count} كوكي!")
+            f.write(message.text)
+        count = len([l for l in message.text.strip().split("\n") if l.strip() and not l.startswith("#")])
+        await message.reply(f"✅ تم حفظ {count} كوكيز!")
     except Exception as e:
         await message.reply(f"❌ خطأ: {e}")
 

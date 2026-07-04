@@ -1,4 +1,4 @@
-import os, re, json, logging, urllib.parse, asyncio, subprocess, tempfile, socket
+import os, re, json, logging, urllib.parse, asyncio, subprocess, tempfile, socket, random
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
@@ -7,8 +7,6 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQ
 import requests
 import ssl
 import concurrent.futures
-from requests.adapters import HTTPAdapter
-from urllib3.poolmanager import PoolManager
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -39,6 +37,36 @@ def _load_cookies():
                 jar[parts[5]] = parts[6]
     return jar
 
+# ── Proxy pool ──
+_proxy_pool = []
+_PROXY_FALLBACK = [
+    "socks5://208.102.51.6:58208", "socks5://69.61.200.104:36181",
+    "socks5://72.195.34.42:4145",  "socks5://184.178.172.25:15291",
+    "socks5://103.163.244.106:1080", "socks5://5.255.117.127:1080",
+    "socks5://202.62.42.167:1080",
+]
+
+def _init_pool():
+    global _proxy_pool
+    if _proxy_pool:
+        return
+    try:
+        r = requests.get("https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt", timeout=10)
+        lines = [l.strip() for l in r.text.strip().split("\n") if l.strip().startswith("socks5")]
+        if lines:
+            _proxy_pool = lines
+            logging.info(f"🌍 Proxy pool: {len(lines)} SOCKS5 proxies")
+            return
+    except:
+        pass
+    _proxy_pool = list(_PROXY_FALLBACK)
+    logging.info(f"🌍 Proxy pool: fallback ({len(_proxy_pool)} proxies)")
+
+def _pick_proxy():
+    if not _proxy_pool:
+        _init_pool()
+    return random.choice(_proxy_pool) if _proxy_pool else None
+
 def fetch(url, timeout=15):
     """Fetch a URL with multiple retries and strategies"""
     errs = []
@@ -47,22 +75,30 @@ def fetch(url, timeout=15):
     if cookies:
         hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
 
-    # Strategy: try Worker with multiple retries + backoff
+    # Strategy 1: try Worker
     if YT_WORKER:
-        workers = [YT_WORKER, YT_WORKER.replace("https://", "http://")]
-        for attempt in range(5):
-            worker = workers[attempt % len(workers)]
+        for attempt in range(4):
             try:
-                wurl = f"{worker}/?url={urllib.parse.quote(url)}"
+                wurl = f"{YT_WORKER}/?url={urllib.parse.quote(url)}"
                 r = requests.get(wurl, headers=hdrs, timeout=timeout)
                 r.raise_for_status()
                 return r
             except Exception as e:
-                errs.append(f"#{attempt+1}: {e}")
-                import time
-                time.sleep(attempt + 1)
+                errs.append(f"Worker #{attempt+1}: {e}")
 
-    # Fallback: direct
+    # Strategy 2: direct with proxy
+    for attempt in range(3):
+        proxy = _pick_proxy()
+        if not proxy:
+            break
+        try:
+            r = requests.get(url, headers=hdrs, timeout=timeout, proxies={"http": proxy, "https": proxy})
+            r.raise_for_status()
+            return r
+        except Exception as e:
+            errs.append(f"Proxy #{attempt+1} ({proxy}): {e}")
+
+    # Strategy 3: direct (no proxy)
     try:
         r = requests.get(url, headers=hdrs, timeout=timeout)
         r.raise_for_status()

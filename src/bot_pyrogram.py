@@ -1,27 +1,73 @@
-import os, re, logging, asyncio
+import os, re, json, logging, urllib.parse, asyncio
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-import yt_dlp
+import requests
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-COOKIES_FILE = "data/cookies.txt" if os.path.exists("data/cookies.txt") else None
 DOWNLOAD_DIR = "downloads"
+YT_WORKER = os.getenv("YT_WORKER", "").rstrip("/")
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 user_data: dict[int, dict] = {}
 
-def ydl_opts(extra=None):
-    opts = {"quiet": True, "no_warnings": True, "cookiefile": COOKIES_FILE}
-    if extra:
-        opts.update(extra)
-    return opts
+# قراءة الكوكيز من ملف
+_cookie_jar = {}
+if os.path.exists("data/cookies.txt"):
+    with open("data/cookies.txt") as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 7:
+                _cookie_jar[parts[5]] = parts[6]
+_cookie_str = "; ".join(f"{k}={v}" for k, v in _cookie_jar.items())
+
+_headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
+def wfetch(url):
+    if YT_WORKER:
+        url = f"{YT_WORKER}/?url={urllib.parse.quote(url)}"
+    hdrs = dict(_headers)
+    if _cookie_str:
+        hdrs["Cookie"] = _cookie_str
+    r = requests.get(url, headers=hdrs, timeout=30)
+    r.raise_for_status()
+    return r
+
+def get_video_info(video_url):
+    html = wfetch(video_url).text
+    m = re.search(r'ytInitialPlayerResponse\s*=\s*({.*?});', html, re.DOTALL)
+    if not m:
+        m = re.search(r'window\.ytInitialPlayerResponse\s*=\s*({.*?});', html, re.DOTALL)
+    if not m:
+        raise Exception("ما لقيت بيانات الفيديو")
+    data = json.loads(m.group(1))
+    title = data.get("videoDetails", {}).get("title", "بدون عنوان")
+    vid = data.get("videoDetails", {}).get("videoId", "")
+    formats = []
+    seen = set()
+    for src in ("formats", "adaptiveFormats"):
+        for fmt in data.get("streamingData", {}).get(src, []):
+            h = fmt.get("height")
+            if h and h not in seen:
+                seen.add(h)
+                formats.append({
+                    "height": h,
+                    "ext": fmt.get("mimeType", "").split("/")[1].split(";")[0],
+                    "url": fmt.get("url", ""),
+                    "filesize": fmt.get("contentLength", 0) and int(fmt["contentLength"]),
+                })
+    formats.sort(key=lambda x: x["height"], reverse=True)
+    return {"id": vid, "title": title, "formats": formats}
 
 app = Client("yt_dl_bot", bot_token=TOKEN, api_id=API_ID, api_hash=API_HASH)
 
@@ -36,24 +82,17 @@ async def handle_url(client, message):
         return
     msg = await message.reply("جاري جلب المعلومات...")
     try:
-        with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
-            info = ydl.extract_info(url, download=False)
-        user_data[message.from_user.id] = {"url": url, "title": info.get("title", "")}
-        formats = info.get("formats", [])
+        info = await asyncio.get_event_loop().run_in_executor(None, get_video_info, url)
+        user_data[message.from_user.id] = info
         keyboard = []
-        seen = set()
-        for f in formats:
-            h = f.get("height")
-            ext = f.get("ext", "mp4")
-            if h and f.get("vcodec") != "none" and h not in seen:
-                seen.add(h)
-                label = f"{h}p ({ext})"
-                if f.get("filesize"):
-                    label += f" {f['filesize']/1024/1024:.0f}MB"
-                keyboard.append([InlineKeyboardButton(label, callback_data=f"dl_{h}_{ext}")])
+        for f in info["formats"]:
+            label = f"{f['height']}p ({f['ext']})"
+            if f["filesize"]:
+                label += f" {f['filesize']/1024/1024:.0f}MB"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"dl_{f['height']}_{f['ext']}")])
         keyboard.append([InlineKeyboardButton("🎥 أعلى دقة", callback_data="dl_best")])
         keyboard.append([InlineKeyboardButton("❌ إلغاء", callback_data="dl_cancel")])
-        await msg.edit_text(f"**{info.get('title')}**\nاختر الدقة:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await msg.edit_text(f"**{info['title']}**\nاختر الدقة:", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
         await msg.edit_text(f"خطأ: {e}")
 
@@ -69,21 +108,16 @@ async def button_handler(client, callback: CallbackQuery):
         await callback.message.edit_text("تم الإلغاء.")
         return
     await callback.message.edit_text("جاري التحميل والرفع...")
-    fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" if data == "dl_best" else f"bestvideo[height<={data.split('_')[1]}][ext={data.split('_')[2]}]+bestaudio[ext=m4a]/best[height<={data.split('_')[1]}]"
     try:
-        with yt_dlp.YoutubeDL(ydl_opts({"format": fmt, "outtmpl": f"{DOWNLOAD_DIR}/%(id)s.%(ext)s", "writethumbnail": True})) as ydl:
-            d = ydl.extract_info(info["url"], download=True)
-        vid, ext = d["id"], d.get("ext", "mp4")
-        vpath = os.path.join(DOWNLOAD_DIR, f"{vid}.{ext}")
-        tpath = next((os.path.join(DOWNLOAD_DIR, f) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(vid) and f != f"{vid}.{ext}"), None)
-        caption = f"🎬 {d.get('title', '')}"
-        thumb = open(tpath, "rb") if tpath and os.path.getsize(tpath) < 10*1024*1024 else None
-        await callback.message.reply_video(video=vpath, caption=caption, thumb=thumb, supports_streaming=True)
-        if thumb:
-            thumb.close()
+        chosen = info["formats"][0] if data == "dl_best" else next((f for f in info["formats"] if f["height"] == int(data.split("_")[1])), info["formats"][0])
+        if not chosen.get("url"):
+            raise Exception("ما فيه رابط تحميل")
+        vpath = os.path.join(DOWNLOAD_DIR, f"{info['id']}.{chosen['ext']}")
+        r = wfetch(chosen["url"])
+        with open(vpath, "wb") as f:
+            f.write(r.content)
+        await callback.message.reply_video(video=vpath, caption=f"🎬 {info['title']}", supports_streaming=True)
         os.remove(vpath)
-        if tpath and os.path.exists(tpath):
-            os.remove(tpath)
         await callback.message.delete()
     except Exception as e:
         await callback.message.edit_text(f"خطأ: {e}")
